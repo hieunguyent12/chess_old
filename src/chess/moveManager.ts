@@ -6,7 +6,9 @@ import Square from "./square";
 export default class MoveManager {
   private board: Board;
   private king!: King;
-  private checkPaths!: Square[];
+  private checkPaths: Square[] = [];
+  private attackedSquares: SquarePosition[] = [];
+  private isCalculatingAttackAreas = false;
 
   constructor(board: Board) {
     this.board = board;
@@ -16,12 +18,16 @@ export default class MoveManager {
     squarePosition: SquarePosition,
     friendlyColor: Player,
     king: King,
-    checkPaths: Square[]
+    checkPaths: Square[],
+    attackedSquares: SquarePosition[],
+    isCalculatingAttackAreas = false
   ) {
     if (!king) return [];
 
     this.king = king;
     this.checkPaths = checkPaths;
+    this.isCalculatingAttackAreas = isCalculatingAttackAreas;
+    this.attackedSquares = attackedSquares;
 
     let legalMoves: SquarePosition[] = [];
 
@@ -34,9 +40,6 @@ export default class MoveManager {
     }
 
     const piece = square.piece;
-
-    // TODO if this piece can eliminate the attacking piece, then it is a legal move
-    // otherwise, it can't move anywhere
 
     if (piece) {
       switch (piece.type) {
@@ -80,14 +83,15 @@ export default class MoveManager {
   }
   public calculatePawnMoves(square: Square, friendlyColor: Player) {
     const legalMoves = [];
+    const legalAttackMoves = [];
     const piece = square.piece;
 
     // white pawn can only go north
     // black can go south
-    const direction = friendlyColor === "w" ? 1 : -1;
+    let direction = friendlyColor === "w" ? -1 : 1;
 
     const posX = square.position.x;
-    const posY = square.position.y - direction;
+    const posY = square.position.y + direction;
 
     if (this.checkInBound(posX, posY)) {
       const square = this.board[posY][posX];
@@ -97,10 +101,73 @@ export default class MoveManager {
           x: posX,
           y: posY,
         });
+
+        if (piece && !piece.hasMoved) {
+          // direction = friendlyColor === "w" ? 2 : -2;
+          // console.log(posX, square.position.y, posY, posY - direction);
+          if (this.checkInBound(posX, posY + direction)) {
+            // console.log("hi");
+            const _square = this.board[posY + direction][posX];
+
+            if (_square.isEmpty) {
+              legalMoves.push({
+                x: posX,
+                y: posY + direction,
+              });
+            }
+          }
+        }
       }
     }
 
-    return this.filterLegalMoves(legalMoves, piece);
+    const leftDiagonalX = posX - 1;
+    const leftDiagonalY = posY;
+
+    if (this.checkInBound(leftDiagonalX, leftDiagonalY)) {
+      const _square = this.board[leftDiagonalY][leftDiagonalX];
+
+      if (_square.piece && _square.piece.color !== friendlyColor) {
+        legalMoves.push({
+          x: leftDiagonalX,
+          y: leftDiagonalY,
+        });
+      }
+
+      if (_square.isEmpty) {
+        legalAttackMoves.push({
+          x: leftDiagonalX,
+          y: leftDiagonalY,
+        });
+      }
+    }
+
+    const rightDiagonalX = posX + 1;
+    const rightDiagonalY = posY;
+
+    if (this.checkInBound(rightDiagonalX, rightDiagonalY)) {
+      const _square = this.board[rightDiagonalY][rightDiagonalX];
+
+      if (_square.piece && _square.piece.color !== friendlyColor) {
+        legalMoves.push({
+          x: rightDiagonalX,
+          y: rightDiagonalY,
+        });
+      }
+
+      if (_square.isEmpty) {
+        legalAttackMoves.push({
+          x: rightDiagonalX,
+          y: rightDiagonalY,
+        });
+      }
+    }
+
+    if (this.isCalculatingAttackAreas) {
+      // console.log(legalAttackMoves);
+      return this.filterLegalMoves(legalAttackMoves, piece);
+    }
+
+    return this.filterLegalMoves([...legalMoves], piece);
   }
 
   public calculateKnightMoves(square: Square, friendlyColor: Player) {
@@ -236,6 +303,11 @@ export default class MoveManager {
       }
     }
 
+    // console.log("legal", legalMoves);
+    if (this.isCalculatingAttackAreas) {
+      return legalMoves;
+    }
+
     return this.filterLegalMoves(legalMoves, piece);
   }
 
@@ -256,10 +328,20 @@ export default class MoveManager {
         const square = this.board[posY][posX];
 
         if (square.isEmpty || square.piece?.color !== friendlyColor) {
-          legalMoves.push({
-            x: posX,
-            y: posY,
-          });
+          let isLegalMove = true;
+          // If this move is not in one of the attacked square, it is legal, otherwise it is illegal to go there
+          for (const attackedSquare of this.attackedSquares) {
+            if (attackedSquare.x === posX && attackedSquare.y === posY) {
+              isLegalMove = false;
+            }
+          }
+
+          if (isLegalMove) {
+            legalMoves.push({
+              x: posX,
+              y: posY,
+            });
+          }
         }
       }
     }
@@ -287,7 +369,8 @@ export default class MoveManager {
       let isOpponentPieceStandingInPath = false;
 
       for (let n = 0; n < square.numbOfSquaresToEdge[i]; n++) {
-        if (isOpponentPieceStandingInPath) break;
+        if (isOpponentPieceStandingInPath && !this.isCalculatingAttackAreas)
+          break;
 
         const posX = square.position.x + x * (n + 1);
         const posY = square.position.y + y * (n + 1);
@@ -316,6 +399,8 @@ export default class MoveManager {
       }
     }
 
+    // console.log("rook", legalMoves);
+
     return this.filterLegalMoves(legalMoves, piece);
   }
 
@@ -333,15 +418,24 @@ export default class MoveManager {
 
     const isKingInCheck = this.king?.isChecked;
 
+    // console.log(this.king);
+
     if (isKingInCheck) {
       const legalMovesIfKingInCheck = [];
       const illegalMoves = [];
 
+      // TODO handle scenario where the king can take the checking piece
+      // but also in that checking path, check if there are "supporting pieces" that would prevent the king to capture the checking piece
       for (const move of legalMoves) {
         for (const path of this.checkPaths) {
           if (isKing) {
             // If the king is trying to move out of check, that square must not be the one in checkPaths
-            if (move.x === path.position.x && move.y === path.position.y) {
+            // except it can attack the attacker if that attacker is not supported by other pieces
+            if (
+              move.x === path.position.x &&
+              move.y === path.position.y &&
+              path.isEmpty
+            ) {
               illegalMoves.push(move);
               continue;
             }

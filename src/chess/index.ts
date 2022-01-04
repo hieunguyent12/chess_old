@@ -74,6 +74,7 @@ class Chess {
 
   private checkPaths: Square[] = [];
   private pinnedPieces: Piece[] = [];
+  public attackedSquares: SquarePosition[] = [];
 
   // keep track of the pieces that can't move because they are pinned
   // private pinnedPieces: Piece[];
@@ -93,7 +94,9 @@ class Chess {
     this.board = FEN ? this.init(FEN) : this.init();
     this.moveManager = new MoveManager(this.board);
 
-    console.log(this.kings);
+    this.calculateAttackAreas();
+
+    console.log(this.attackedSquares);
   }
 
   private init(FEN?: string) {
@@ -318,6 +321,9 @@ class Chess {
       return;
     }
 
+    // If we make a move that will result in the king being checked, then it is not legal
+    // const temp = this.board;
+
     // do nothing if we are moving to the same square where we started
     if (fromSquare.x === toSquare.x && fromSquare.y === toSquare.y) {
       return;
@@ -347,32 +353,44 @@ class Chess {
 
     // update the kings position
     if (piece.type === "k" || piece.type === "K") {
+      // @ts-ignore
       this.kings[piece.color] = {
-        isChecked: false,
+        ...this.kings[piece.color],
         position: to.position,
       };
     }
 
     this.board = newBoard;
-    // make sure calculateChecks is called above all else
-    this.calculateChecks();
-    this.updatePlayerTurn();
-    this.notifyPlayerMove();
-    this.emitUpdate();
 
-    // console.log("bitches", this.kings);
+    this.attackedSquares = [];
 
-    return {
-      color: fromColor,
-      from: from.coordinate,
-      to: to.coordinate,
-      captured: capturedPiece,
-    };
+    // console.log(this.kings);
+    // this.calculateChecks();
+    // if (this.kings[this.playerTurn]?.isChecked) {
+    //   // this.attackedSquares = [];
+    //   // this.updatePlayerTurn();
+    //   // this.calculateAttackAreas();
+    //   // this.calculateChecks();
+    //   console.log("illegal move, revert the move");
+    //   return;
+    // }
+
+    // this.updatePlayerTurn();
+    // this.calculateAttackAreas();
+
+    // // this.notifyPlayerMove();
+    // this.emitUpdate();
+
+    // return {
+    //   color: fromColor,
+    //   from: from.coordinate,
+    //   to: to.coordinate,
+    //   captured: capturedPiece,
+    // };
   }
 
   // TODO
-  // calculate all of the squares that are attacked so we know where the kings can move into
-  // let a piece know which piece is pinning it, so that way, when we calculate the legal moves, we can take the pinning piece into consideration
+  // calculate all of the squares that are attacked so we know where the kings can't move into
   // en passant
   // castling
 
@@ -426,8 +444,6 @@ class Chess {
             const targetSquare = this.board[posY][posX];
             const squarePiece = targetSquare.piece;
 
-            checkPaths.push(targetSquare);
-
             // check if this piece belong to opponent
             if (squarePiece && squarePiece.color === opponentColor) {
               // only a queen and a bishop can check on diagonal lines
@@ -437,6 +453,7 @@ class Chess {
                   squarePiece.type.toLowerCase() === "b" ||
                   squarePiece.type.toLowerCase() === "q"
                 ) {
+                  checkPaths.push(targetSquare);
                   if (isTherePieceBlockingCheck) {
                     king.isChecked = false;
                     // If there is only one piece blocking the path, that piece is pinned
@@ -515,6 +532,7 @@ class Chess {
                   squarePiece.type.toLowerCase() === "r" ||
                   squarePiece.type.toLowerCase() === "q"
                 ) {
+                  checkPaths.push(targetSquare);
                   if (isTherePieceBlockingCheck) {
                     king.isChecked = false;
                     if (possiblePinnedPieces.length === 1) {
@@ -572,6 +590,8 @@ class Chess {
               possiblePinnedPieces.push(squarePiece);
             }
           }
+
+          // console.log("paths", color, direction, checkPaths);
         }
 
         // console.log(isThisKingChecked);
@@ -643,14 +663,44 @@ class Chess {
     }
   }
 
+  public calculateAttackAreas() {
+    // calculate the squares that attacked by the opponent
+    const friendlyColor = this.friendlyColor === "w" ? "b" : "w";
+
+    for (let r = 0; r < this.board.length; r++) {
+      const rank = this.board[r];
+      for (let f = 0; f < rank.length; f++) {
+        const square = rank[f];
+
+        const piece = square.piece;
+
+        if (piece && piece.color === friendlyColor) {
+          const legalMoves = this.calculateLegalMoves(
+            square.position,
+            friendlyColor,
+            true
+          );
+
+          this.attackedSquares = [...this.attackedSquares, ...legalMoves];
+        }
+      }
+    }
+  }
+
   // returns an array of the square positions that this piece can move into
-  public calculateLegalMoves(squarePosition: SquarePosition) {
+  public calculateLegalMoves(
+    squarePosition: SquarePosition,
+    friendlyColor?: Player,
+    isCalculatingAreas = false
+  ) {
     // console.log(this.kings[this.playerTurn]);
     return this.moveManager.calculateLegalMoves(
       squarePosition,
-      this.friendlyColor,
+      friendlyColor ? friendlyColor : this.friendlyColor,
       this.kings[this.playerTurn],
-      this.checkPaths
+      this.checkPaths,
+      this.attackedSquares,
+      isCalculatingAreas
     );
   }
 
