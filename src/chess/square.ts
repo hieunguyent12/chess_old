@@ -1,5 +1,4 @@
 import Piece from "./piece";
-
 import { SquarePosition } from "./types";
 
 export default class Square {
@@ -8,6 +7,8 @@ export default class Square {
   public isEmpty: boolean = true;
   public piece: Piece | undefined;
   public numbOfSquaresToEdge: number[];
+  public makeEmpty: () => void;
+  public movePieceHere: (piece: Piece) => void;
 
   constructor(
     position: SquarePosition,
@@ -26,14 +27,18 @@ export default class Square {
       this.isEmpty = false;
       this.piece = piece;
     }
+
+    /* eslint-disable */
+    this.makeEmpty = this._makeEmpty;
+    this.movePieceHere = this._movePieceHere;
   }
 
-  public makeEmpty() {
+  public _makeEmpty() {
     this.piece = undefined;
     this.isEmpty = true;
   }
 
-  public movePieceHere(piece: Piece) {
+  public _movePieceHere(piece: Piece) {
     this.piece = piece;
     this.isEmpty = false;
   }

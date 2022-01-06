@@ -1,10 +1,9 @@
 import { isNumeric } from "../utils";
+import MoveManager from "./moveManager";
 import Piece from "./piece";
 import { PiecesType } from "./pieces";
 import Square from "./square";
-import { SquarePosition } from "./types";
-import MoveManager from "./moveManager";
-import { Board } from "./types";
+import { Board, SquarePosition } from "./types";
 
 export type Player = "w" | "b";
 type SubscriberCallback<T> = (arg: T) => void;
@@ -13,6 +12,16 @@ export type King = {
   isChecked: boolean;
 } | null;
 type Kings = Record<Player, King>;
+export type CastleRights = {
+  w: {
+    short: boolean;
+    long: boolean;
+  };
+  b: {
+    short: boolean;
+    long: boolean;
+  };
+};
 
 export const DIRECTIONS = [
   [0, -1], // north
@@ -57,13 +66,15 @@ class Chess {
   // the friendly pieces are the ones that belongs to the current player who is making a move
   private friendlyColor = this.playerTurn;
 
-  private whiteCastlingRights = {
-    kingSide: true,
-    queenSide: true,
-  };
-  private blackCastlingRights = {
-    kingSide: true,
-    queenSide: true,
+  private castlingRights: CastleRights = {
+    w: {
+      short: true,
+      long: true,
+    },
+    b: {
+      short: true,
+      long: true,
+    },
   };
 
   // keep track of black and white's kings position on the board
@@ -72,12 +83,7 @@ class Chess {
     w: null,
   };
 
-  private checkPaths: Square[] = [];
-  private pinnedPieces: Piece[] = [];
-  public attackedSquares: SquarePosition[] = [];
-
-  // keep track of the pieces that can't move because they are pinned
-  // private pinnedPieces: Piece[];
+  private enPassantSquares: (SquarePosition & { color: Player })[] = [];
 
   // A FEN string representing the starting position (viewed from white's perspective)
   // lowercase = black   uppercase = white
@@ -92,11 +98,7 @@ class Chess {
 
   constructor(FEN?: string) {
     this.board = FEN ? this.init(FEN) : this.init();
-    this.moveManager = new MoveManager(this.board);
-
-    this.calculateAttackAreas();
-
-    console.log(this.attackedSquares);
+    this.moveManager = new MoveManager(this.board, this.castlingRights);
   }
 
   private init(FEN?: string) {
@@ -119,14 +121,15 @@ class Chess {
       const castleRights = FEN_fields[2];
 
       if (castleRights) {
-        this.whiteCastlingRights.kingSide =
-          castleRights.indexOf("K") !== -1 && castleRights !== "-";
-        this.whiteCastlingRights.queenSide =
-          castleRights.indexOf("Q") !== -1 && castleRights !== "-";
-        this.blackCastlingRights.kingSide =
-          castleRights.indexOf("k") !== -1 && castleRights !== "-";
-        this.blackCastlingRights.queenSide =
-          castleRights.indexOf("q") !== -1 && castleRights !== "-";
+        // this.castlingRights.
+        // this.whiteCastlingRights.kingSide =
+        //   castleRights.indexOf("K") !== -1 && castleRights !== "-";
+        // this.whiteCastlingRights.queenSide =
+        //   castleRights.indexOf("Q") !== -1 && castleRights !== "-";
+        // this.blackCastlingRights.kingSide =
+        //   castleRights.indexOf("k") !== -1 && castleRights !== "-";
+        // this.blackCastlingRights.queenSide =
+        //   castleRights.indexOf("q") !== -1 && castleRights !== "-";
 
         if (castleRights.indexOf("K") !== -1) {
           console.log("white can kingside castle");
@@ -302,17 +305,20 @@ class Chess {
     fromSquare: SquarePosition,
     toSquare: SquarePosition
   ) {
-    // If the king is in check, then the current player can only block the check or move the king away
-
     // probably cache this because we're calling it twice from Square.tsx and here
     // when calculating legal moves, also take in to consideration whether or not the king is in check
     const legalMoves = this.calculateLegalMoves({ ...fromSquare });
 
     let isLegalMove = false;
 
+    let chosenMove!: SquarePosition & {
+      isCastling?: boolean | undefined;
+    };
+
     for (const move of legalMoves) {
       if (move.x === toSquare.x && move.y === toSquare.y) {
         isLegalMove = true;
+        chosenMove = move;
         break;
       }
     }
@@ -320,9 +326,6 @@ class Chess {
     if (!isLegalMove) {
       return;
     }
-
-    // If we make a move that will result in the king being checked, then it is not legal
-    // const temp = this.board;
 
     // do nothing if we are moving to the same square where we started
     if (fromSquare.x === toSquare.x && fromSquare.y === toSquare.y) {
@@ -333,8 +336,6 @@ class Chess {
 
     const from = newBoard[fromSquare.y][fromSquare.x];
     const to = newBoard[toSquare.y][toSquare.x];
-
-    const fromColor = from.piece?.color;
 
     // Check whether or not this piece belongs to the current player
     if (from.piece?.color !== this.playerTurn) {
@@ -348,359 +349,305 @@ class Chess {
       capturedPiece = to.piece;
     }
 
-    from.makeEmpty();
     to.movePieceHere(piece);
+    from.makeEmpty();
 
-    // update the kings position
-    if (piece.type === "k" || piece.type === "K") {
+    const myKing = this.kings[this.playerTurn];
+    let oldPosition;
+    if (myKing) {
+      oldPosition = myKing?.position;
+    }
+    if (piece.type.toLowerCase() === "k") {
       // @ts-ignore
-      this.kings[piece.color] = {
-        ...this.kings[piece.color],
+      this.kings[this.playerTurn] = {
+        ...myKing,
         position: to.position,
       };
     }
 
-    this.board = newBoard;
+    // IF THE KING IS IN CHECK AFTER MAKING A MOVE, THAT MOVE IS ILLEGAL
+    this.calculateChecks(newBoard);
 
-    this.attackedSquares = [];
+    // console.log(newBoard);
+    // If the move results in a check of our own king, then it is illegal
+    if (this.kings[this.playerTurn]?.isChecked) {
+      // console.log(this.kings);
+      // Undo everything here
+      // TODO implement some sort of history to keep track of these moves so we can undo it easily
+      from.movePieceHere(piece);
 
-    // console.log(this.kings);
-    // this.calculateChecks();
-    // if (this.kings[this.playerTurn]?.isChecked) {
-    //   // this.attackedSquares = [];
-    //   // this.updatePlayerTurn();
-    //   // this.calculateAttackAreas();
-    //   // this.calculateChecks();
-    //   console.log("illegal move, revert the move");
-    //   return;
-    // }
+      if (capturedPiece) {
+        to.movePieceHere(capturedPiece);
+      } else {
+        to.makeEmpty();
+      }
 
-    // this.updatePlayerTurn();
-    // this.calculateAttackAreas();
+      if (piece.type.toLowerCase() === "k" && oldPosition) {
+        // @ts-ignore
+        this.kings[this.playerTurn] = {
+          ...myKing,
+          position: oldPosition,
+        };
+      }
+      // @ts-ignore
+      // this.kings[this.playerTurn].isChecked = false;
+    } else {
+      if (piece.type.toLowerCase() === "p") {
+        for (const enPassantSquare of this.enPassantSquares) {
+          // If we make an en passant move, capture the pawn below the en passant square
+          if (
+            enPassantSquare.x === to.position.x &&
+            enPassantSquare.y === to.position.y &&
+            enPassantSquare.color !== this.playerTurn
+          ) {
+            const dir = this.playerTurn === "w" ? 1 : -1;
+            const pawnSquare =
+              newBoard[enPassantSquare.y + dir][enPassantSquare.x];
 
-    // // this.notifyPlayerMove();
-    // this.emitUpdate();
+            if (pawnSquare.piece?.color !== this.playerTurn) {
+              pawnSquare.makeEmpty();
+            }
+          }
+        }
 
-    // return {
-    //   color: fromColor,
-    //   from: from.coordinate,
-    //   to: to.coordinate,
-    //   captured: capturedPiece,
-    // };
+        this.calculateEnPassant(from, to, piece);
+      }
+
+      // update the kings position
+      if (piece.type.toLowerCase() === "k") {
+        // @ts-ignore
+        this.kings[this.playerTurn] = {
+          ...myKing,
+          position: to.position,
+        };
+
+        if (chosenMove.isCastling) {
+          // long castle
+          if (chosenMove.x === from.position.x - 2) {
+            const rook = this.board[chosenMove.y][from.position.x - 4];
+            const rookPiece = rook.piece;
+
+            if (rookPiece) {
+              this.board[chosenMove.y][from.position.x - 1].movePieceHere(
+                rookPiece
+              );
+              rook.makeEmpty();
+            }
+
+            // for (let i = 0; i < 4; i++) {
+            //   const n = i + 1;
+            //   // this.movePiece(piece, fromSquare, {
+            //   //   x: from.position.x - n,
+            //   //   y: from.position.y,
+            //   // });
+            // }
+          } else {
+            const rook = this.board[chosenMove.y][from.position.x + 3];
+            const rookPiece = rook.piece;
+
+            if (rookPiece) {
+              this.board[chosenMove.y][from.position.x + 1].movePieceHere(
+                rookPiece
+              );
+              rook.makeEmpty();
+            }
+            // for (let i = 0; i < 2; i++) {
+            //   const n = i + 1;
+            //   // this.movePiece(piece, fromSquare, {
+            //   //   x: from.position.x + n,
+            //   //   y: from.position.y,
+            //   // });
+            // }
+          }
+        }
+
+        this.castlingRights[this.playerTurn].long = false;
+        this.castlingRights[this.playerTurn].short = false;
+      }
+
+      if (piece.type.toLowerCase() === "r") {
+        if (from.position.x === 0) {
+          this.castlingRights[this.playerTurn].long = false;
+        }
+
+        if (from.position.x === 7) {
+          this.castlingRights[this.playerTurn].short = false;
+        }
+      }
+
+      this.board = newBoard;
+
+      piece.hasMoved = true;
+
+      // if (!chosenMove.isCastling) {
+      this.updatePlayerTurn();
+      // }
+      this.calculateChecks(this.board);
+
+      this.emitUpdate();
+    }
   }
 
   // TODO
-  // calculate all of the squares that are attacked so we know where the kings can't move into
-  // en passant
   // castling
 
-  // TODO move this to seperate file
-  // Check for checks against the kings for both black and white in all directions
-  public calculateChecks() {
-    const colors: Record<0 | 1, Player> = {
-      0: "w",
-      1: "b",
-    };
+  public calculateChecks(board: Board) {
+    for (const color in this.kings) {
+      const king = this.kings[color as Player];
+      const friendlyColor = color;
+      let isKingChecked = false;
 
-    // calculate checks for both kings
-    for (let k = 0; k < 2; k++) {
-      let checkCounter = 0; // impossible to get more than 2 checks at once
-      const color = colors[k as keyof typeof colors];
-      let isThisKingChecked = false;
-      let isThereAnyPinnedPieces = false;
-
-      // console.log(isThisKingChecked);
-
-      const opponentColor = color === "w" ? "b" : "w";
-      const king = this.kings[color];
-
-      if (!king?.position.x && !king?.position.y) {
+      if (!king) {
         return;
-      } else {
-        const kingSquare = this.board[king.position.y][king.position.x];
+      }
 
-        // check all directions of the king for any checks
-        for (let i = 0; i < DIRECTIONS.length; i++) {
-          if (checkCounter >= 2) {
-            break;
-          }
+      const kingSquare = board[king.position.y][king.position.x];
 
-          const direction = DIRECTIONS[i];
-          const [x, y] = direction;
+      // Check all directions for any checks
+      for (let i = 0; i < DIRECTIONS.length; i++) {
+        const direction = DIRECTIONS[i];
+        const [x, y] = direction;
 
-          const isDiagonal = i >= 4;
-          const checkPaths = [];
-          const possiblePinnedPieces = [];
-          let isTherePieceBlockingCheck = false;
+        const isDiagonal = i >= 4;
+        let isTherePieceBlockingCheck = false;
 
-          for (let n = 0; n < kingSquare.numbOfSquaresToEdge[i]; n++) {
-            if (checkCounter >= 2) {
-              break;
-            }
+        for (let n = 0; n < kingSquare.numbOfSquaresToEdge[i]; n++) {
+          const posX = kingSquare.position.x + x * (n + 1);
+          const posY = kingSquare.position.y + y * (n + 1);
+          const targetSquare = board[posY][posX];
+          const targetPiece = targetSquare.piece;
 
-            const posX = kingSquare.position.x + x * (n + 1);
-            const posY = kingSquare.position.y + y * (n + 1);
-
-            const targetSquare = this.board[posY][posX];
-            const squarePiece = targetSquare.piece;
-
-            // check if this piece belong to opponent
-            if (squarePiece && squarePiece.color === opponentColor) {
-              // only a queen and a bishop can check on diagonal lines
-              // so if for example, a pawn is standing between the king and the opponent queen, then there won't be a check
-              if (isDiagonal) {
-                if (
-                  squarePiece.type.toLowerCase() === "b" ||
-                  squarePiece.type.toLowerCase() === "q"
-                ) {
-                  checkPaths.push(targetSquare);
-                  if (isTherePieceBlockingCheck) {
-                    king.isChecked = false;
-                    // If there is only one piece blocking the path, that piece is pinned
-                    if (possiblePinnedPieces.length === 1) {
-                      console.log("potential check", targetSquare);
-                      console.log("pinned pieces", possiblePinnedPieces);
-                      // TODO save this checkPaths, a pinned piece can only move in these checkPaths
-                      console.log("check paths", checkPaths);
-                      // TODO unpin these pieces
-                      this.checkPaths = checkPaths;
-                      possiblePinnedPieces[0].isPinned = true;
-                      this.pinnedPieces.push(possiblePinnedPieces[0]);
-                      checkCounter++;
-                      isThereAnyPinnedPieces = true;
-                    } else {
-                      // if there are two or more pieces in the way of a potential check, then none of those pieces are pinned
-                      for (const piece of this.pinnedPieces) {
-                        for (const possiblyPinnedPiece of possiblePinnedPieces) {
-                          if (piece === possiblyPinnedPiece) {
-                            piece.isPinned = false;
-                            this.pinnedPieces = this.pinnedPieces.filter(
-                              (p) => p !== piece
-                            );
-                          }
-                        }
-                      }
-                    }
-                  } else {
-                    console.log("diagonal check", targetSquare);
-                    console.log("check rays", checkPaths);
-                    // If there is not a friendly piece standing in the way, the king is checked
-                    this.checkPaths = checkPaths;
-                    king.isChecked = true;
-                    isThisKingChecked = true;
-                  }
-                } else {
-                  // If there is an opponent piece standing in this diagonal but can't move diagonally, the friendly pieces are no longer pinned
-                  // and the king is not checked
-                  // king.isChecked = false;
-                  for (const piece of this.pinnedPieces) {
-                    for (const possiblyPinnedPiece of possiblePinnedPieces) {
-                      if (piece === possiblyPinnedPiece) {
-                        piece.isPinned = false;
-                        this.pinnedPieces = this.pinnedPieces.filter(
-                          (p) => p !== piece
-                        );
-                      }
-                    }
-                  }
-                }
-
-                // TODO make sure the king is not checked if none of these cases apply
-                if (squarePiece.type.toLowerCase() === "p" && n === 0) {
-                  if (
-                    color === "b" &&
-                    ((y === 1 && x === 1) || (y === 1 && x === -1))
-                  ) {
-                    console.log("pawn check", targetSquare);
-                    king.isChecked = true;
-                    isThisKingChecked = true;
-                  }
-                  if (
-                    color === "w" &&
-                    ((y === -1 && x === 1) || (y === -1 && x === -1))
-                  ) {
-                    console.log("pawn check", targetSquare);
-                    king.isChecked = true;
-                    isThisKingChecked = true;
-                  }
-                }
-
-                break;
-              } else {
-                // ORTHOGONAL CHECKS
-                if (
-                  squarePiece.type.toLowerCase() === "r" ||
-                  squarePiece.type.toLowerCase() === "q"
-                ) {
-                  checkPaths.push(targetSquare);
-                  if (isTherePieceBlockingCheck) {
-                    king.isChecked = false;
-                    if (possiblePinnedPieces.length === 1) {
-                      console.log("potential check", targetSquare);
-                      console.log("pinned pieces", possiblePinnedPieces);
-                      possiblePinnedPieces[0].isPinned = true;
-                      this.pinnedPieces.push(possiblePinnedPieces[0]);
-                      checkCounter++;
-                      this.checkPaths = checkPaths;
-                      isThereAnyPinnedPieces = true;
-                    } else {
-                      // if there are two or more pieces in the way of a potential check, then none of those pieces are pinned
-                      for (const piece of this.pinnedPieces) {
-                        for (const possiblyPinnedPiece of possiblePinnedPieces) {
-                          if (piece === possiblyPinnedPiece) {
-                            piece.isPinned = false;
-                            this.pinnedPieces = this.pinnedPieces.filter(
-                              (p) => p !== piece
-                            );
-                          }
-                        }
-                      }
-                    }
-                  } else {
-                    console.log("orthogonal check", targetSquare);
-                    console.log("check rays", checkPaths);
-                    this.checkPaths = checkPaths;
-                    king.isChecked = true;
-                    isThisKingChecked = true;
-                    // console.log("king is checked", targetSquare);
-                  }
-                } else {
-                  // console.log("SHOULD NOT RUNNNNNNNN");
-                  // king.isChecked = false;
-                  // if there are two or more pieces in the way of a potential check, then none of those pieces are pinned
-                  for (const piece of this.pinnedPieces) {
-                    for (const possiblyPinnedPiece of possiblePinnedPieces) {
-                      if (piece === possiblyPinnedPiece) {
-                        piece.isPinned = false;
-                        this.pinnedPieces = this.pinnedPieces.filter(
-                          (p) => p !== piece
-                        );
-                      }
-                    }
-                  }
-                }
-
-                break;
-              }
-            }
-
-            // friendly piece blocking check
-            if (squarePiece && squarePiece.color === color) {
-              isTherePieceBlockingCheck = true;
-              possiblePinnedPieces.push(squarePiece);
-            }
-          }
-
-          // console.log("paths", color, direction, checkPaths);
-        }
-
-        // console.log(isThisKingChecked);
-
-        let currentRank = king.position.y - 2;
-        let currentFile = king.position.x - 2;
-        // let checkCounter = 0; // impossible to get more than 3 checks at once
-
-        // check for knights checks
-        for (let i = 0; i < 5; i++) {
-          if (checkCounter >= 2) {
-            break;
-          }
-          if (!(currentRank <= 7 && currentRank >= 0)) {
-            currentRank++;
+          if (!targetPiece) {
             continue;
           }
-          for (let j = 0; j < 5; j++) {
-            if (!(currentFile <= 7 && currentFile >= 0)) {
-              currentFile++;
-              continue;
-            }
 
-            // console.log(currentRank, currentFile);
-            const square = this.board[currentRank][currentFile];
+          const targetPieceType = targetPiece.type.toLowerCase();
 
-            if (
-              square.piece?.type.toLowerCase() === "n" &&
-              square.piece.color === opponentColor
-            ) {
-              const dx = Math.abs(currentFile - king.position.x);
-              const dy = Math.abs(currentRank - king.position.y);
+          // A friendly piece is standing in the way, so there would not be any check
+          if (targetPiece.color === friendlyColor) {
+            isTherePieceBlockingCheck = true;
+          }
 
-              const isChecked =
-                (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
-
-              if (isChecked) {
-                console.log("knight check", square);
-                king.isChecked = true;
-                isThisKingChecked = true;
-                checkCounter++;
-              }
-            }
-
-            if (checkCounter >= 2) {
+          // This is an opponent piece
+          if (targetPiece?.color !== friendlyColor) {
+            if (isTherePieceBlockingCheck) {
               break;
             }
 
-            currentFile++;
-          }
+            if (isDiagonal) {
+              // Diagonal checks
 
-          currentFile = king.position.x - 2;
-          currentRank++;
-        }
+              // Only a queen, pawn and bishops can check the king on diagonal lines
+              if (targetPieceType === "b" || targetPieceType === "q") {
+                isKingChecked = true;
+                king.isChecked = true;
+              }
 
-        if (!isThereAnyPinnedPieces) {
-          for (const piece of this.pinnedPieces) {
-            if (piece.color === color) {
-              piece.isPinned = false;
-              this.pinnedPieces = this.pinnedPieces.filter((p) => p !== piece);
+              if (targetPieceType === "p" && n === 0) {
+                if (
+                  color === "b" &&
+                  ((y === 1 && x === 1) || (y === 1 && x === -1))
+                ) {
+                  isKingChecked = true;
+                  king.isChecked = true;
+                }
+                if (
+                  color === "w" &&
+                  ((y === -1 && x === 1) || (y === -1 && x === -1))
+                ) {
+                  isKingChecked = true;
+                  king.isChecked = true;
+                }
+              }
+
+              break;
+            } else {
+              // Orthogonal checks
+              if (targetPieceType === "b" || targetPieceType === "q") {
+                isKingChecked = true;
+                king.isChecked = true;
+              }
+
+              break;
             }
           }
         }
       }
 
-      if (!isThisKingChecked) {
+      let currentRank = king.position.y - 2;
+      let currentFile = king.position.x - 2;
+
+      // check for knights checks
+      for (let i = 0; i < 5; i++) {
+        if (!(currentRank <= 7 && currentRank >= 0)) {
+          currentRank++;
+          continue;
+        }
+        for (let j = 0; j < 5; j++) {
+          if (!(currentFile <= 7 && currentFile >= 0)) {
+            currentFile++;
+            continue;
+          }
+
+          const square = this.board[currentRank][currentFile];
+
+          if (
+            square.piece?.type.toLowerCase() === "n" &&
+            square.piece.color !== friendlyColor
+          ) {
+            const dx = Math.abs(currentFile - king.position.x);
+            const dy = Math.abs(currentRank - king.position.y);
+
+            const isChecked = (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
+
+            if (isChecked) {
+              isKingChecked = true;
+            }
+          }
+
+          currentFile++;
+        }
+
+        currentFile = king.position.x - 2;
+        currentRank++;
+      }
+
+      if (!isKingChecked) {
         king.isChecked = false;
       }
     }
   }
 
-  public calculateAttackAreas() {
-    // calculate the squares that attacked by the opponent
-    const friendlyColor = this.friendlyColor === "w" ? "b" : "w";
+  public calculateEnPassant(from: Square, to: Square, piece: Piece) {
+    this.enPassantSquares = [];
 
-    for (let r = 0; r < this.board.length; r++) {
-      const rank = this.board[r];
-      for (let f = 0; f < rank.length; f++) {
-        const square = rank[f];
+    if (piece.hasMoved) return;
 
-        const piece = square.piece;
+    const dir = this.playerTurn === "w" ? -2 : 2;
+    const enPassantDir = this.playerTurn === "w" ? 1 : -1;
 
-        if (piece && piece.color === friendlyColor) {
-          const legalMoves = this.calculateLegalMoves(
-            square.position,
-            friendlyColor,
-            true
-          );
-
-          this.attackedSquares = [...this.attackedSquares, ...legalMoves];
-        }
-      }
+    if (
+      to.position.y - dir === from.position.y &&
+      to.position.x === from.position.x
+    ) {
+      this.enPassantSquares.push({
+        x: to.position.x,
+        y: to.position.y + enPassantDir,
+        color: this.playerTurn,
+      });
     }
   }
 
   // returns an array of the square positions that this piece can move into
   public calculateLegalMoves(
     squarePosition: SquarePosition,
-    friendlyColor?: Player,
-    isCalculatingAreas = false
+    friendlyColor?: Player
   ) {
-    // console.log(this.kings[this.playerTurn]);
     return this.moveManager.calculateLegalMoves(
       squarePosition,
       friendlyColor ? friendlyColor : this.friendlyColor,
       this.kings[this.playerTurn],
-      this.checkPaths,
-      this.attackedSquares,
-      isCalculatingAreas
+      this.enPassantSquares
     );
   }
 

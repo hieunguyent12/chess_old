@@ -61,10 +61,6 @@ export default function Square({
     [square, chess]
   );
 
-  const isAttacked = chess.attackedSquares.some(
-    (s) => square.position.x === s.x && square.position.y === s.y
-  );
-
   return (
     <div
       className="square"
@@ -77,8 +73,6 @@ export default function Square({
       {!square.isEmpty ? (
         <Piece square={square} chess={chess} orientation={orientation} />
       ) : null}
-      {/* {isAttacked && <Overlay color="orange" />} */}
-      {isOver && !canDrop && <Overlay color="red" />}
       {!isOver && canDrop && <Overlay color="yellow" />}
       {isOver && canDrop && <Overlay color="green" />}
     </div>

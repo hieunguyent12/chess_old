@@ -1,38 +1,33 @@
-import { Board, SquarePosition } from "./types";
+import { CastleRights, DIRECTIONS, King, Player } from "./index";
 import Piece from "./piece";
-import { DIRECTIONS, Player, King } from "./index";
 import Square from "./square";
+import { Board, SquarePosition } from "./types";
 
 export default class MoveManager {
   private board: Board;
   private king!: King;
-  private checkPaths: Square[] = [];
-  private attackedSquares: SquarePosition[] = [];
-  private isCalculatingAttackAreas = false;
+  private enPassantSquares!: (SquarePosition & { color: Player })[];
+  private castleRights: CastleRights;
 
-  constructor(board: Board) {
+  constructor(board: Board, castleRights: CastleRights) {
     this.board = board;
+    this.castleRights = castleRights;
   }
 
   public calculateLegalMoves(
     squarePosition: SquarePosition,
     friendlyColor: Player,
     king: King,
-    checkPaths: Square[],
-    attackedSquares: SquarePosition[],
-    isCalculatingAttackAreas = false
+    enPassantSquares: (SquarePosition & { color: Player })[]
   ) {
     if (!king) return [];
 
     this.king = king;
-    this.checkPaths = checkPaths;
-    this.isCalculatingAttackAreas = isCalculatingAttackAreas;
-    this.attackedSquares = attackedSquares;
+    this.enPassantSquares = enPassantSquares;
 
-    let legalMoves: SquarePosition[] = [];
+    let legalMoves: (SquarePosition & { isCastling?: boolean })[] = [];
 
     const square = this.board[squarePosition.y][squarePosition.x];
-    // console.log("sheesh");
 
     // check if we are dragging a piece
     if (square.isEmpty) {
@@ -83,7 +78,6 @@ export default class MoveManager {
   }
   public calculatePawnMoves(square: Square, friendlyColor: Player) {
     const legalMoves = [];
-    const legalAttackMoves = [];
     const piece = square.piece;
 
     // white pawn can only go north
@@ -103,10 +97,8 @@ export default class MoveManager {
         });
 
         if (piece && !piece.hasMoved) {
-          // direction = friendlyColor === "w" ? 2 : -2;
           // console.log(posX, square.position.y, posY, posY - direction);
           if (this.checkInBound(posX, posY + direction)) {
-            // console.log("hi");
             const _square = this.board[posY + direction][posX];
 
             if (_square.isEmpty) {
@@ -133,8 +125,16 @@ export default class MoveManager {
         });
       }
 
-      if (_square.isEmpty) {
-        legalAttackMoves.push({
+      if (
+        _square.isEmpty &&
+        this.enPassantSquares.some(
+          (s) =>
+            s.x === leftDiagonalX &&
+            s.y === leftDiagonalY &&
+            s.color !== friendlyColor
+        )
+      ) {
+        legalMoves.push({
           x: leftDiagonalX,
           y: leftDiagonalY,
         });
@@ -154,20 +154,23 @@ export default class MoveManager {
         });
       }
 
-      if (_square.isEmpty) {
-        legalAttackMoves.push({
+      if (
+        _square.isEmpty &&
+        this.enPassantSquares.some(
+          (s) =>
+            s.x === rightDiagonalX &&
+            s.y === rightDiagonalY &&
+            s.color !== friendlyColor
+        )
+      ) {
+        legalMoves.push({
           x: rightDiagonalX,
           y: rightDiagonalY,
         });
       }
     }
 
-    if (this.isCalculatingAttackAreas) {
-      // console.log(legalAttackMoves);
-      return this.filterLegalMoves(legalAttackMoves, piece);
-    }
-
-    return this.filterLegalMoves([...legalMoves], piece);
+    return this.filterLegalMoves(legalMoves, piece);
   }
 
   public calculateKnightMoves(square: Square, friendlyColor: Player) {
@@ -303,17 +306,15 @@ export default class MoveManager {
       }
     }
 
-    // console.log("legal", legalMoves);
-    if (this.isCalculatingAttackAreas) {
-      return legalMoves;
-    }
-
     return this.filterLegalMoves(legalMoves, piece);
   }
 
   public calculateKingMoves(square: Square, friendlyColor: Player) {
     const legalMoves = [];
     const piece = square.piece;
+
+    const canCastleShort = this.castleRights[friendlyColor].short;
+    const canCastleLong = this.castleRights[friendlyColor].long;
 
     for (let i = 0; i < DIRECTIONS.length; i++) {
       const direction = DIRECTIONS[i];
@@ -329,12 +330,6 @@ export default class MoveManager {
 
         if (square.isEmpty || square.piece?.color !== friendlyColor) {
           let isLegalMove = true;
-          // If this move is not in one of the attacked square, it is legal, otherwise it is illegal to go there
-          for (const attackedSquare of this.attackedSquares) {
-            if (attackedSquare.x === posX && attackedSquare.y === posY) {
-              isLegalMove = false;
-            }
-          }
 
           if (isLegalMove) {
             legalMoves.push({
@@ -342,6 +337,30 @@ export default class MoveManager {
               y: posY,
             });
           }
+        }
+      }
+
+      if (canCastleShort) {
+        const x = square.position.x + 2;
+
+        if (this.board[square.position.y][x].isEmpty) {
+          legalMoves.push({
+            x,
+            y: square.position.y,
+            isCastling: true,
+          });
+        }
+      }
+
+      if (canCastleLong) {
+        const x = square.position.x - 2;
+
+        if (this.board[square.position.y][x].isEmpty) {
+          legalMoves.push({
+            x,
+            y: square.position.y,
+            isCastling: true,
+          });
         }
       }
     }
@@ -369,8 +388,7 @@ export default class MoveManager {
       let isOpponentPieceStandingInPath = false;
 
       for (let n = 0; n < square.numbOfSquaresToEdge[i]; n++) {
-        if (isOpponentPieceStandingInPath && !this.isCalculatingAttackAreas)
-          break;
+        if (isOpponentPieceStandingInPath) break;
 
         const posX = square.position.x + x * (n + 1);
         const posY = square.position.y + y * (n + 1);
@@ -413,81 +431,6 @@ export default class MoveManager {
     piece: Piece | undefined,
     isKing = false
   ) {
-    // console.log("filter");
-    if (!piece) return [];
-
-    const isKingInCheck = this.king?.isChecked;
-
-    // console.log(this.king);
-
-    if (isKingInCheck) {
-      const legalMovesIfKingInCheck = [];
-      const illegalMoves = [];
-
-      // TODO handle scenario where the king can take the checking piece
-      // but also in that checking path, check if there are "supporting pieces" that would prevent the king to capture the checking piece
-      for (const move of legalMoves) {
-        for (const path of this.checkPaths) {
-          if (isKing) {
-            // If the king is trying to move out of check, that square must not be the one in checkPaths
-            // except it can attack the attacker if that attacker is not supported by other pieces
-            if (
-              move.x === path.position.x &&
-              move.y === path.position.y &&
-              path.isEmpty
-            ) {
-              illegalMoves.push(move);
-              continue;
-            }
-
-            // Check if this move is not one of the illegal move
-            if (
-              illegalMoves.filter((m) => m.x === move.x && m.y === move.y)
-                .length === 0
-            ) {
-              legalMovesIfKingInCheck.push(move);
-            }
-          } else {
-            if (move.x === path.position.x && move.y === path.position.y) {
-              const pathSquare = this.board[path.position.y][path.position.x];
-              const square = this.board[move.y][move.x];
-
-              if (pathSquare.isEmpty && !pathSquare.piece && square.piece) {
-                square.piece.isPinned = true;
-              }
-
-              legalMovesIfKingInCheck.push(move);
-            }
-          }
-        }
-      }
-
-      console.log("king is in check", legalMovesIfKingInCheck);
-
-      return legalMovesIfKingInCheck;
-    }
-
-    // console.log("siked");
-
-    if (piece.isPinned) {
-      const legalMovesIfPinned = [];
-
-      for (const move of legalMoves) {
-        for (const path of this.checkPaths) {
-          if (move.x === path.position.x && move.y === path.position.y) {
-            legalMovesIfPinned.push(move);
-          }
-        }
-      }
-
-      return legalMovesIfPinned;
-    }
-
-    if (!isKingInCheck && !piece.isPinned) {
-      // console.log("not pinned nor checked", this.king, piece);
-      return legalMoves;
-    }
-
-    return [];
+    return legalMoves;
   }
 }
